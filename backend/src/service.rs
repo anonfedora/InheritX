@@ -3517,3 +3517,97 @@ impl EmergencyAdminService {
         rows.iter().map(plan_row_to_plan_with_beneficiary).collect()
     }
 }
+
+// ── Emergency Access Analytics ──────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmergencyAccessMetric {
+    pub date: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmergencyAccessMetrics {
+    pub total_grants: i64,
+    pub active_grants: i64,
+    pub total_revocations: i64,
+    pub total_alerts: i64,
+    pub alerts_by_severity: BTreeMap<String, i64>,
+    pub grant_trend: Vec<EmergencyAccessMetric>,
+}
+
+pub struct EmergencyAccessMetricsService;
+
+impl EmergencyAccessMetricsService {
+    pub async fn get_metrics(db: &PgPool, range: &str) -> Result<EmergencyAccessMetrics, ApiError> {
+        let total_grants: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM emergency_access_grants")
+            .fetch_one(db)
+            .await?;
+
+        let active_grants: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM emergency_access_grants WHERE is_active = true AND expires_at > NOW()",
+        )
+        .fetch_one(db)
+        .await?;
+
+        let total_revocations: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM emergency_access_grants WHERE revoked_at IS NOT NULL",
+        )
+        .fetch_one(db)
+        .await?;
+
+        let total_alerts: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM emergency_access_risk_alerts")
+                .fetch_one(db)
+                .await?;
+
+        let alert_severity_rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT severity, COUNT(*) FROM emergency_access_risk_alerts GROUP BY severity",
+        )
+        .fetch_all(db)
+        .await?;
+
+        let mut alerts_by_severity = BTreeMap::new();
+        for (severity, count) in alert_severity_rows {
+            alerts_by_severity.insert(severity.to_lowercase(), count);
+        }
+
+        let (interval, trunc) = match range {
+            "daily" => ("30 days", "day"),
+            "weekly" => ("12 weeks", "week"),
+            "monthly" => ("12 months", "month"),
+            _ => ("30 days", "day"), // default to daily
+        };
+
+        let trend_query = format!(
+            r#"
+            SELECT 
+                DATE_TRUNC('{}', created_at)::DATE::TEXT as date,
+                COUNT(*)::BIGINT as count
+            FROM emergency_access_grants
+            WHERE created_at >= NOW() - INTERVAL '{}'
+            GROUP BY 1
+            ORDER BY 1
+            "#,
+            trunc, interval
+        );
+
+        let trend_rows: Vec<(String, i64)> = sqlx::query_as(&trend_query).fetch_all(db).await?;
+
+        let grant_trend = trend_rows
+            .into_iter()
+            .map(|(date, count)| EmergencyAccessMetric { date, count })
+            .collect();
+
+        Ok(EmergencyAccessMetrics {
+            total_grants,
+            active_grants,
+            total_revocations,
+            total_alerts,
+            alerts_by_severity,
+            grant_trend,
+        })
+    }
+}
