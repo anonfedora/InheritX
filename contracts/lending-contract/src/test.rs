@@ -2007,7 +2007,6 @@ fn test_full_unstake_resets_tracking() {
     assert_eq!(rewards_later, rewards_immediately);
 }
 
-
 #[test]
 fn test_yield_farming_functions_exposed() {
     let env = Env::default();
