@@ -27,6 +27,9 @@ vi.mock("framer-motion", () => ({
   AnimatePresence: ({ children }: any) => <>{children}</>,
 }));
 
+const VALID_BENEFICIARY_ADDRESS =
+  "GCDFLQR2SGPDRQ473YUJ3Z5Z64BAJOH7EFFF4DC6ZEABSUWNLAR7Q7KJ";
+
 const mockPlan: Plan = {
   id: "plan_1",
   user_id: "user_1",
@@ -39,6 +42,14 @@ const mockPlan: Plan = {
   risk_override_enabled: false,
   created_at: "2024-01-01T00:00:00Z",
   updated_at: "2024-01-01T00:00:00Z",
+  beneficiaries: [
+    {
+      wallet_address: VALID_BENEFICIARY_ADDRESS,
+      name: "Alice Smith",
+      allocation_bps: 10000,
+      fiat_anchor_info: "",
+    },
+  ],
 };
 
 beforeEach(() => {
@@ -268,6 +279,7 @@ describe("EditInheritancePlanPanel", () => {
     const planWithoutName: Plan = {
       ...mockPlan,
       beneficiary_name: undefined,
+      beneficiaries: [],
     };
 
     render(
@@ -289,9 +301,7 @@ describe("EditInheritancePlanPanel", () => {
     await user.click(screen.getByRole("button", { name: /save changes/i }));
 
     await waitFor(() => {
-      expect(
-        screen.getByText(/all beneficiaries must have a name and wallet address/i)
-      ).toBeInTheDocument();
+      expect(screen.getAllByText(/name is required/i).length).toBeGreaterThan(0);
     });
   });
 });

@@ -4,6 +4,9 @@
  */
 
 import { apiClient, ApiResponse, PaginatedResponse } from "./client";
+import type { PlanBeneficiaryRequest, PlanResponse } from "./inheritance";
+
+export type { PlanBeneficiaryRequest, PlanResponse };
 
 export interface Plan {
   id: string;
@@ -37,32 +40,41 @@ export interface Plan {
   last_ping?: number;
 }
 
-export interface Beneficiary {
-  id?: string;
-  wallet_address: string;
-  name: string;
-  allocation_percentage: number;
-}
-
+/**
+ * Request DTOs below mirror the Axum backend's `Plan` and `UpdatePlanRequest`
+ * structs exactly (see backend/src/api.rs) so beneficiary allocations,
+ * wallet addresses, and fiat anchor info are never dropped on submission.
+ */
 export interface CreatePlanRequest {
-  title: string;
-  description?: string;
-  fee: number;
-  net_amount: number;
-  beneficiary_name?: string;
-  bank_account_number?: string;
-  bank_name?: string;
-  currency_preference: string;
-  two_fa_code: string;
+  /** Owner Stellar address */
+  owner: string;
+  /** Token contract address on Stellar */
+  token: string;
+  /** Amount to deposit (in token units) */
+  amount: number;
+  /** Full list of beneficiaries with allocations. Must sum to 10000 bps */
+  beneficiaries: PlanBeneficiaryRequest[];
+  /** Unix timestamp of the last liveness ping */
+  last_ping: number;
+  /** Grace period in seconds before the plan becomes claimable */
+  grace_period: number;
+  /** Whether this plan earns yield via AMM / lending pools */
+  earn_yield: boolean;
+  /** Annualised yield rate in basis points (e.g. 500 = 5%) */
+  yield_rate_bps: number;
+  /** Whether the plan is active immediately */
+  is_active: boolean;
 }
 
 export interface UpdatePlanRequest {
-  title?: string;
-  description?: string;
-  beneficiaries?: Beneficiary[];
-  inactivity_period_days?: number;
-  yield_harvesting_enabled?: boolean;
-  signed_transaction?: string;
+  /** Full replacement list of beneficiaries with allocations. Must sum to 10000 bps */
+  beneficiaries: PlanBeneficiaryRequest[];
+  /** Grace period in seconds before the plan becomes claimable */
+  grace_period?: number;
+  /** Whether this plan earns yield via AMM / lending pools */
+  earn_yield?: boolean;
+  /** Annualised yield rate in basis points (e.g. 500 = 5%) */
+  yield_rate_bps?: number;
 }
 
 export interface ClaimPlanRequest {
@@ -86,12 +98,8 @@ export class PlansAPI {
   /**
    * Create a new plan
    */
-  async createPlan(request: CreatePlanRequest): Promise<Plan> {
-    const response = await apiClient.post<ApiResponse<Plan>>(
-      "/api/plans",
-      request
-    );
-    return response.data!;
+  async createPlan(request: CreatePlanRequest): Promise<PlanResponse> {
+    return apiClient.post<PlanResponse>("/api/plans", request);
   }
 
   /**
@@ -151,14 +159,13 @@ export class PlansAPI {
   }
 
   /**
-   * Update an existing plan
+   * Update an existing plan's beneficiaries, grace period, or yield settings
    */
-  async updatePlan(planId: string, request: UpdatePlanRequest): Promise<Plan> {
-    const response = await apiClient.put<ApiResponse<Plan>>(
-      `/api/plans/${planId}`,
-      request
-    );
-    return response.data!;
+  async updatePlan(
+    planId: string,
+    request: UpdatePlanRequest
+  ): Promise<PlanResponse> {
+    return apiClient.put<PlanResponse>(`/api/plans/${planId}`, request);
   }
 
   /**

@@ -15,24 +15,35 @@ beforeEach(() => {
 describe("PlansAPI - Update Plan", () => {
   it("successfully updates a plan with new beneficiaries and settings", async () => {
     const updateRequest: UpdatePlanRequest = {
-      title: "Updated Family Trust",
       beneficiaries: [
-        { wallet_address: "GABC123", name: "Alice", allocation_percentage: 60 },
-        { wallet_address: "GDEF456", name: "Bob", allocation_percentage: 40 },
+        {
+          address: "GCDFLQR2SGPDRQ473YUJ3Z5Z64BAJOH7EFFF4DC6ZEABSUWNLAR7Q7KJ",
+          name: "Alice",
+          allocation_bps: 6000,
+          fiat_anchor_info: "",
+        },
+        {
+          address: "GDP2PVYRRAB35TQMJ4DPJOV5BBBM6PJUHWKMSTF6YYXUDXUT7BCLCIFE",
+          name: "Bob",
+          allocation_bps: 4000,
+          fiat_anchor_info: "",
+        },
       ],
-      inactivity_period_days: 365,
-      yield_harvesting_enabled: true,
+      grace_period: 365 * 86400,
+      earn_yield: true,
+      yield_rate_bps: 500,
     };
 
     const result = await api.updatePlan("plan_1", updateRequest);
     expect(result).toBeDefined();
     expect(result.id).toBe("plan_1");
-    expect(result.title).toBe("Updated Family Trust");
+    expect(result.beneficiaries).toHaveLength(2);
+    expect(result.earn_yield).toBe(true);
   });
 
   it("throws an error when updating a non-existent plan", async () => {
     await expect(
-      api.updatePlan("plan_nonexistent", { title: "Ghost" })
+      api.updatePlan("plan_nonexistent", { beneficiaries: [] })
     ).rejects.toThrow();
   });
 
@@ -42,9 +53,9 @@ describe("PlansAPI - Update Plan", () => {
         HttpResponse.json({ error: "Internal server error" }, { status: 500 })
       )
     );
-    await expect(api.updatePlan("plan_1", { title: "X" })).rejects.toThrow(
-      "Internal server error"
-    );
+    await expect(
+      api.updatePlan("plan_1", { beneficiaries: [] })
+    ).rejects.toThrow("Internal server error");
   });
 });
 

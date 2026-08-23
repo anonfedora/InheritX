@@ -1,62 +1,59 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import {
-  AlertCircle,
-  CheckCircle,
-  Loader2,
-  Plus,
-  Trash2,
-} from "lucide-react";
+import { AlertCircle, CheckCircle, Loader2, Plus } from "lucide-react";
 import { plansAPI } from "@/app/lib/api/plans";
-import type { Beneficiary } from "@/app/lib/api/plans";
+import type { CreatePlanRequest } from "@/app/lib/api/plans";
+import {
+  getSelectedTokenIdentifier,
+  isValidTokenIdentifier,
+} from "@/app/lib/validation/inheritancePlan";
 import { useWallet } from "@/context/WalletContext";
 import { CrossChainDepositSection } from "./CrossChainDepositSection";
+import {
+  BeneficiaryAllocationRow,
+  DEFAULT_BENEFICIARY_DRAFT,
+  beneficiaryDraftToRequest,
+  bpsToPercentageLabel,
+  totalAllocationBps,
+  validateBeneficiaryDrafts,
+  type BeneficiaryDraft,
+} from "./BeneficiaryAllocationRow";
 
-const DEFAULT_BENEFICIARY: Omit<Beneficiary, "id"> = {
-  wallet_address: "",
-  name: "",
-  allocation_percentage: 100,
-};
-
-function totalAllocation(beneficiaries: Beneficiary[]): number {
-  return beneficiaries.reduce(
-    (sum, b) => sum + (b.allocation_percentage || 0),
-    0
-  );
-}
-
-function isAllocationValid(beneficiaries: Beneficiary[]): boolean {
-  const total = totalAllocation(beneficiaries);
-  return (
-    total === 100 &&
-    beneficiaries.every((b) => (b.allocation_percentage || 0) > 0)
-  );
-}
+const TOKEN_OPTIONS = ["XLM", "USDC", "CUSTOM"] as const;
 
 type SubmitStatus = "idle" | "creating" | "success" | "error";
 
 export function CreateInheritancePlanPanel() {
-  const { isConnected, openModal } = useWallet();
+  const { address, isConnected, openModal } = useWallet();
 
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [depositAmount, setDepositAmount] = useState("");
   const [inactivityDays, setInactivityDays] = useState(180);
-  const [beneficiaries, setBeneficiaries] = useState<Beneficiary[]>([
-    { ...DEFAULT_BENEFICIARY },
+  const [tokenType, setTokenType] = useState<(typeof TOKEN_OPTIONS)[number]>("XLM");
+  const [customTokenAddress, setCustomTokenAddress] = useState("");
+  const [beneficiaries, setBeneficiaries] = useState<BeneficiaryDraft[]>([
+    { ...DEFAULT_BENEFICIARY_DRAFT, allocationBps: 10000 },
   ]);
   const [bridgeTransferId, setBridgeTransferId] = useState<string | null>(null);
   const [status, setStatus] = useState<SubmitStatus>("idle");
   const [errorMessage, setErrorMessage] = useState("");
+  const [touched, setTouched] = useState(false);
 
-  const allocationTotal = totalAllocation(beneficiaries);
-  const allocationOk = isAllocationValid(beneficiaries);
+  const allocationTotalBps = totalAllocationBps(beneficiaries);
+  const { rowErrors, totalError } = useMemo(
+    () => validateBeneficiaryDrafts(beneficiaries),
+    [beneficiaries]
+  );
+  const beneficiariesValid = Object.keys(rowErrors).length === 0 && !totalError;
   const parsedDeposit = Number.parseFloat(depositAmount) || 0;
+  const selectedToken = getSelectedTokenIdentifier(tokenType, customTokenAddress);
+  const tokenValid = isValidTokenIdentifier(tokenType, customTokenAddress);
 
   const handleBeneficiaryChange = useCallback(
-    (index: number, field: keyof Beneficiary, value: string | number) => {
+    (index: number, field: keyof BeneficiaryDraft, value: string | number | boolean) => {
       setBeneficiaries((prev) =>
         prev.map((b, i) => (i === index ? { ...b, [field]: value } : b))
       );
@@ -65,7 +62,7 @@ export function CreateInheritancePlanPanel() {
   );
 
   const addBeneficiary = () => {
-    setBeneficiaries((prev) => [...prev, { ...DEFAULT_BENEFICIARY }]);
+    setBeneficiaries((prev) => [...prev, { ...DEFAULT_BENEFICIARY_DRAFT }]);
   };
 
   const removeBeneficiary = (index: number) => {
@@ -76,11 +73,36 @@ export function CreateInheritancePlanPanel() {
     setBridgeTransferId(transferId);
   }, []);
 
-  const handleCreatePlan = async () => {
-    if (!title.trim() || !allocationOk || parsedDeposit <= 0) return;
+  const canSubmit =
+    !!title.trim() &&
+    !!address &&
+    tokenValid &&
+    beneficiariesValid &&
+    parsedDeposit > 0 &&
+    !!bridgeTransferId;
 
-    if (!isConnected) {
+  const handleCreatePlan = async () => {
+    setTouched(true);
+
+    if (!isConnected || !address) {
       openModal();
+      return;
+    }
+
+    if (!tokenValid) {
+      setErrorMessage("Choose XLM, USDC, or enter a valid custom Stellar contract address.");
+      return;
+    }
+
+    if (!beneficiariesValid) {
+      setErrorMessage(
+        totalError || "Resolve the highlighted beneficiary fields before creating the plan."
+      );
+      return;
+    }
+
+    if (parsedDeposit <= 0) {
+      setErrorMessage("Enter a deposit amount greater than zero.");
       return;
     }
 
@@ -95,16 +117,18 @@ export function CreateInheritancePlanPanel() {
     setStatus("creating");
 
     try {
-      const feeEstimate = parsedDeposit * 0.01;
-      await plansAPI.createPlan({
-        title: title.trim(),
-        description: description.trim() || undefined,
-        fee: feeEstimate,
-        net_amount: parsedDeposit - feeEstimate,
-        currency_preference: "USD",
-        two_fa_code: "000000",
-        beneficiary_name: beneficiaries[0]?.name,
-      });
+      const request: CreatePlanRequest = {
+        owner: address,
+        token: selectedToken,
+        amount: parsedDeposit,
+        beneficiaries: beneficiaries.map(beneficiaryDraftToRequest),
+        last_ping: Math.floor(Date.now() / 1000),
+        grace_period: inactivityDays * 86400,
+        earn_yield: false,
+        yield_rate_bps: 0,
+        is_active: true,
+      };
+      await plansAPI.createPlan(request);
       setStatus("success");
     } catch (error) {
       setStatus("error");
@@ -113,6 +137,8 @@ export function CreateInheritancePlanPanel() {
       );
     }
   };
+
+  const showErrors = touched || status === "error";
 
   return (
     <div className="max-w-3xl mx-auto space-y-8">
@@ -155,6 +181,39 @@ export function CreateInheritancePlanPanel() {
                   className="bg-[#0A0F11] border border-[#2A3338] rounded-lg px-4 py-2.5 text-sm text-slate-200 resize-none focus:outline-none focus:border-[#33C5E0] transition-colors"
                 />
               </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-[#92A5A8]">Destination Asset</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {TOKEN_OPTIONS.map((token) => (
+                    <button
+                      key={token}
+                      type="button"
+                      onClick={() => setTokenType(token)}
+                      className={`rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${
+                        tokenType === token
+                          ? "border-[#33C5E0] bg-[#33C5E014] text-[#33C5E0]"
+                          : "border-[#2A3338] text-[#92A5A8] hover:border-[#3A4348]"
+                      }`}
+                    >
+                      {token === "CUSTOM" ? "Custom" : token}
+                    </button>
+                  ))}
+                </div>
+                {tokenType === "CUSTOM" && (
+                  <input
+                    type="text"
+                    value={customTokenAddress}
+                    onChange={(e) => setCustomTokenAddress(e.target.value)}
+                    placeholder="C..."
+                    className="mt-1 bg-[#0A0F11] border border-[#2A3338] rounded-lg px-4 py-2.5 text-sm text-slate-200 placeholder-[#4A5568] focus:outline-none focus:border-[#33C5E0] transition-colors font-mono"
+                  />
+                )}
+                {showErrors && !tokenValid && (
+                  <p className="text-xs text-[#F56565]">
+                    Choose XLM, USDC, or enter a valid custom Stellar contract address.
+                  </p>
+                )}
+              </div>
             </div>
           </section>
 
@@ -165,83 +224,29 @@ export function CreateInheritancePlanPanel() {
               </h2>
               <span
                 className={`text-xs font-mono px-2 py-0.5 rounded-full ${
-                  allocationOk
+                  !totalError
                     ? "bg-[#48BB7814] text-[#48BB78]"
                     : "bg-[#F5656514] text-[#F56565]"
                 }`}
               >
-                {allocationTotal}% / 100%
+                {bpsToPercentageLabel(allocationTotalBps)}% / 100%
               </span>
             </div>
 
             <div className="space-y-3">
-              {beneficiaries.map((beneficiary, index) => (
-                <div
-                  key={index}
-                  className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_100px_36px] gap-3 items-start"
-                >
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[10px] text-[#92A5A8] uppercase tracking-wider">
-                      Name
-                    </label>
-                    <input
-                      type="text"
-                      value={beneficiary.name}
-                      onChange={(e) =>
-                        handleBeneficiaryChange(index, "name", e.target.value)
-                      }
-                      placeholder="Alice Smith"
-                      className="bg-[#0A0F11] border border-[#2A3338] rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-[#4A5568] focus:outline-none focus:border-[#33C5E0] transition-colors"
-                    />
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[10px] text-[#92A5A8] uppercase tracking-wider">
-                      Wallet Address
-                    </label>
-                    <input
-                      type="text"
-                      value={beneficiary.wallet_address}
-                      onChange={(e) =>
-                        handleBeneficiaryChange(
-                          index,
-                          "wallet_address",
-                          e.target.value
-                        )
-                      }
-                      placeholder="G..."
-                      className="bg-[#0A0F11] border border-[#2A3338] rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-[#4A5568] focus:outline-none focus:border-[#33C5E0] transition-colors font-mono"
-                    />
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[10px] text-[#92A5A8] uppercase tracking-wider">
-                      Share (%)
-                    </label>
-                    <input
-                      type="number"
-                      min={1}
-                      max={100}
-                      value={beneficiary.allocation_percentage || ""}
-                      onChange={(e) =>
-                        handleBeneficiaryChange(
-                          index,
-                          "allocation_percentage",
-                          Number(e.target.value)
-                        )
-                      }
-                      className="bg-[#0A0F11] border border-[#2A3338] rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-[#33C5E0] transition-colors"
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => removeBeneficiary(index)}
-                    disabled={beneficiaries.length <= 1}
-                    aria-label="Remove beneficiary"
-                    className="sm:mt-6 p-2 rounded-lg text-[#F56565] hover:bg-[#F5656514] disabled:opacity-30 disabled:cursor-not-allowed transition-colors justify-self-start"
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                </div>
-              ))}
+              <AnimatePresence initial={false}>
+                {beneficiaries.map((beneficiary, index) => (
+                  <BeneficiaryAllocationRow
+                    key={index}
+                    index={index}
+                    beneficiary={beneficiary}
+                    error={showErrors ? rowErrors[index] : undefined}
+                    onChange={handleBeneficiaryChange}
+                    onRemove={removeBeneficiary}
+                    canRemove={beneficiaries.length > 1}
+                  />
+                ))}
+              </AnimatePresence>
             </div>
 
             <button
@@ -252,6 +257,10 @@ export function CreateInheritancePlanPanel() {
               <Plus size={15} />
               Add beneficiary
             </button>
+
+            {showErrors && totalError && (
+              <p className="text-xs text-[#F56565]">{totalError}</p>
+            )}
           </section>
 
           <section className="space-y-3">
@@ -324,10 +333,7 @@ export function CreateInheritancePlanPanel() {
             type="button"
             onClick={handleCreatePlan}
             disabled={
-              !title.trim() ||
-              !allocationOk ||
-              parsedDeposit <= 0 ||
-              !bridgeTransferId ||
+              (touched && !canSubmit) ||
               status === "creating" ||
               status === "success"
             }

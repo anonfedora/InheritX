@@ -219,14 +219,62 @@ export const plansHandlers = [
     });
   }),
 
+  // Update plan — matches the Axum PUT /api/plans/:id signature
   http.put("/api/plans/:id", async ({ params, request }) => {
     const body = (await request.json()) as Record<string, unknown>;
-    const plan = mockPlans.find((p) => p.id === params.id);
+    const plan = mockPlans.find((p) => p.id === params.id) as
+      | Record<string, unknown>
+      | undefined;
     if (!plan) {
-      return HttpResponse.json({ status: "error", message: "Plan not found" }, { status: 404 });
+      return HttpResponse.json({ error: "Plan not found" }, { status: 404 });
     }
-    const updated = { ...plan, ...body, updated_at: new Date().toISOString() };
-    return HttpResponse.json({ status: "ok", data: updated });
+
+    const beneficiaries = (body.beneficiaries as Array<Record<string, unknown>>) || [];
+    if (beneficiaries.length > 0) {
+      const totalBps = beneficiaries.reduce(
+        (sum: number, b: Record<string, unknown>) => sum + ((b.allocation_bps as number) || 0),
+        0
+      );
+      if (totalBps !== 10000) {
+        return HttpResponse.json(
+          { error: `Total allocation_bps must be exactly 10000 (100%), got ${totalBps}` },
+          { status: 400 }
+        );
+      }
+
+      plan.beneficiaries = beneficiaries.map((b, i) => ({
+        id: `ben_${plan.id}_${i}`,
+        plan_id: plan.id,
+        wallet_address: b.address as string,
+        allocation_bps: b.allocation_bps as number,
+        fiat_anchor_info: (b.fiat_anchor_info as string) || "",
+        fiat_daily_limit: "0",
+      }));
+    }
+
+    if (body.grace_period !== undefined) {
+      plan.grace_period = body.grace_period;
+      plan.grace_period_seconds = body.grace_period;
+    }
+    if (body.earn_yield !== undefined) plan.earn_yield = body.earn_yield;
+    if (body.yield_rate_bps !== undefined) plan.yield_rate_bps = body.yield_rate_bps;
+
+    return HttpResponse.json({
+      id: plan.id,
+      owner_address: plan.owner_address,
+      token_address: plan.token_address,
+      amount: String(plan.amount ?? "0"),
+      grace_period: plan.grace_period ?? 0,
+      grace_period_seconds: plan.grace_period_seconds ?? 0,
+      earn_yield: plan.earn_yield ?? false,
+      last_ping: plan.last_ping ?? 0,
+      is_active: plan.is_active ?? true,
+      status: plan.status ?? "ACTIVE",
+      yield_rate_bps: plan.yield_rate_bps ?? 0,
+      accrued_yield: plan.accrued_yield ?? 0,
+      created_at: plan.created_at,
+      beneficiaries: plan.beneficiaries ?? [],
+    });
   }),
 
   http.post("/api/plans/:id/trigger", ({ params }) => {

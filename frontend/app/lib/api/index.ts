@@ -26,7 +26,6 @@ import { PlansAPI } from "./plans";
 export { PlansAPI } from "./plans";
 export type {
   Plan,
-  Beneficiary,
   CreatePlanRequest,
   UpdatePlanRequest,
   ClaimPlanRequest,
