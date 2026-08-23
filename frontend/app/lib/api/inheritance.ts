@@ -49,6 +49,17 @@ export interface CreatePlanRequest {
   is_active: boolean;
 }
 
+export interface UpdatePlanRequest {
+  /** Full replacement list of beneficiaries with allocations */
+  beneficiaries: PlanBeneficiaryRequest[];
+  /** Grace period in seconds before the plan becomes claimable */
+  grace_period?: number;
+  /** Whether this plan earns yield via AMM / lending pools */
+  earn_yield?: boolean;
+  /** Annualised yield rate in basis points (e.g. 500 = 5%) */
+  yield_rate_bps?: number;
+}
+
 export interface PingRequest {
   /** Owner Stellar address */
   owner: string;
@@ -201,6 +212,20 @@ export class InheritanceAPI {
     const endpoint = qs ? `/api/plans?${qs}` : "/api/plans";
 
     return apiClient.get<PlanResponse[]>(endpoint, config);
+  }
+
+  /**
+   * Update an existing inheritance plan's beneficiaries, grace period, or
+   * yield settings.
+   *
+   * Requires signature auth (X-Public-Key + X-Signature headers).
+   */
+  async updatePlan(
+    planId: string,
+    request: UpdatePlanRequest,
+    config?: RequestConfig
+  ): Promise<PlanResponse> {
+    return apiClient.put<PlanResponse>(`/api/plans/${planId}`, request, config);
   }
 
   /**

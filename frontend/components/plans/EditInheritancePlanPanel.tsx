@@ -1,19 +1,22 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Plus, Trash2, X, Save, AlertCircle, CheckCircle, Loader2, ArrowLeftRight } from "lucide-react";
+import { Plus, X, Save, AlertCircle, CheckCircle, Loader2 } from "lucide-react";
 import { plansAPI } from "@/app/lib/api/plans";
-import type { Plan, Beneficiary, UpdatePlanRequest } from "@/app/lib/api/plans";
+import type { Plan, UpdatePlanRequest } from "@/app/lib/api/plans";
 import { useWallet } from "@/context/WalletContext";
 import { AllocationFlowChart } from "@/components/plans/AllocationFlowChart";
 import type { BeneficiaryFlow } from "@/components/plans/AllocationFlowChart";
-
-// ─── Local type with fiat off‑ramp flag ─────────────────────────────────────
-
-interface BeneficiaryLocal extends Beneficiary {
-  isFiat: boolean;
-}
+import {
+  BeneficiaryAllocationRow,
+  DEFAULT_BENEFICIARY_DRAFT,
+  beneficiaryDraftToRequest,
+  bpsToPercentageLabel,
+  totalAllocationBps,
+  validateBeneficiaryDrafts,
+  type BeneficiaryDraft,
+} from "@/components/plans/BeneficiaryAllocationRow";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -25,122 +28,45 @@ interface EditInheritancePlanPanelProps {
 
 type TxStatus = "idle" | "signing" | "saving" | "success" | "error";
 
+const SECONDS_PER_DAY = 86_400;
+const DEFAULT_YIELD_RATE_BPS = 500;
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-const DEFAULT_BENEFICIARY: Omit<BeneficiaryLocal, "id"> = {
-  wallet_address: "",
-  name: "",
-  allocation_percentage: 0,
-  isFiat: false,
-};
+function seedBeneficiaries(plan: Plan): BeneficiaryDraft[] {
+  if (Array.isArray(plan.beneficiaries) && plan.beneficiaries.length > 0) {
+    return plan.beneficiaries.map((b: any) => {
+      const fiatAnchorInfo: string = b.fiat_anchor_info ?? "";
+      const isFiat = fiatAnchorInfo.trim().length > 0;
+      let parsed: { name?: string; currency?: string; bank?: string; account?: string; daily_limit?: string } | null =
+        null;
+      if (isFiat) {
+        try {
+          parsed = JSON.parse(fiatAnchorInfo);
+        } catch {
+          parsed = null;
+        }
+      }
 
-function totalAllocation(beneficiaries: Beneficiary[]): number {
-  return beneficiaries.reduce((sum, b) => sum + (b.allocation_percentage || 0), 0);
-}
+      return {
+        address: b.wallet_address ?? b.address ?? "",
+        name: b.name ?? parsed?.name ?? "",
+        allocationBps: b.allocation_bps ?? 0,
+        isFiat,
+        fiatBank: parsed?.bank ?? "",
+        fiatAccount: parsed?.account ?? "",
+        fiatCurrency: parsed?.currency ?? "USD",
+        fiatDailyLimit:
+          parsed?.daily_limit ?? (b.fiat_daily_limit ? String(b.fiat_daily_limit) : ""),
+      };
+    });
+  }
 
-function isAllocationDistributionValid(beneficiaries: Beneficiary[]): boolean {
-  const total = totalAllocation(beneficiaries);
-  const allPositive = beneficiaries.every((b) => (b.allocation_percentage || 0) > 0);
-  return total === 100 && allPositive;
-}
+  if (plan.beneficiary_name) {
+    return [{ ...DEFAULT_BENEFICIARY_DRAFT, name: plan.beneficiary_name, allocationBps: 10000 }];
+  }
 
-// ─── Sub-components ──────────────────────────────────────────────────────────
-
-function BeneficiaryRow({
-  beneficiary,
-  index,
-  onChange,
-  onRemove,
-  canRemove,
-}: {
-  beneficiary: BeneficiaryLocal;
-  index: number;
-  onChange: (index: number, field: keyof BeneficiaryLocal, value: string | number | boolean) => void;
-  onRemove: (index: number) => void;
-  canRemove: boolean;
-}) {
-  return (
-    <motion.div
-      layout
-      initial={{ opacity: 0, y: -8 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -8 }}
-      transition={{ duration: 0.18 }}
-      className="grid grid-cols-[1fr_1fr_80px_90px_36px] gap-2 items-start"
-    >
-      <div className="flex flex-col gap-1">
-        <label className="text-[10px] text-[#92A5A8] uppercase tracking-wider">
-          Name
-        </label>
-        <input
-          type="text"
-          value={beneficiary.name}
-          onChange={(e) => onChange(index, "name", e.target.value)}
-          placeholder="Alice Smith"
-          className="bg-[#0A0F11] border border-[#2A3338] rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-[#4A5568] focus:outline-none focus:border-[#33C5E0] transition-colors"
-        />
-      </div>
-
-      <div className="flex flex-col gap-1">
-        <label className="text-[10px] text-[#92A5A8] uppercase tracking-wider">
-          Wallet Address
-        </label>
-        <input
-          type="text"
-          value={beneficiary.wallet_address}
-          onChange={(e) => onChange(index, "wallet_address", e.target.value)}
-          placeholder="G..."
-          className="bg-[#0A0F11] border border-[#2A3338] rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-[#4A5568] focus:outline-none focus:border-[#33C5E0] transition-colors font-mono"
-        />
-      </div>
-
-      <div className="flex flex-col gap-1">
-        <label className="text-[10px] text-[#92A5A8] uppercase tracking-wider">
-          Share (%)
-        </label>
-        <input
-          type="number"
-          min={1}
-          max={100}
-          value={beneficiary.allocation_percentage || ""}
-          onChange={(e) =>
-            onChange(index, "allocation_percentage", Number(e.target.value))
-          }
-          placeholder="0"
-          className="bg-[#0A0F11] border border-[#2A3338] rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-[#4A5568] focus:outline-none focus:border-[#33C5E0] transition-colors"
-        />
-      </div>
-
-      <div className="flex flex-col gap-1">
-        <label className="text-[10px] text-[#92A5A8] uppercase tracking-wider">
-          Payout
-        </label>
-        <button
-          type="button"
-          onClick={() => onChange(index, "isFiat", !beneficiary.isFiat)}
-          aria-label={`Toggle fiat off-ramp for ${beneficiary.name || index + 1}`}
-          className={`flex items-center justify-center gap-1.5 px-2 py-2 rounded-lg text-xs font-medium border transition-colors ${
-            beneficiary.isFiat
-              ? "bg-[#F59E0B14] border-[#F59E0B40] text-[#F59E0B]"
-              : "bg-[#48BB7814] border-[#48BB7840] text-[#48BB78]"
-          }`}
-        >
-          <ArrowLeftRight size={12} />
-          {beneficiary.isFiat ? "Fiat" : "Token"}
-        </button>
-      </div>
-
-      <button
-        type="button"
-        onClick={() => onRemove(index)}
-        disabled={!canRemove}
-        aria-label={`Remove beneficiary ${beneficiary.name || index + 1}`}
-        className="mt-6 p-2 rounded-lg text-[#F56565] hover:bg-[#F5656514] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-      >
-        <Trash2 size={16} />
-      </button>
-    </motion.div>
-  );
+  return [{ ...DEFAULT_BENEFICIARY_DRAFT }];
 }
 
 // ─── Main Panel ───────────────────────────────────────────────────────────────
@@ -154,43 +80,46 @@ export function EditInheritancePlanPanel({
 
   const [title, setTitle] = useState(plan.title);
   const [description, setDescription] = useState(plan.description ?? "");
-  const [inactivityDays, setInactivityDays] = useState<number>(
-    plan.contract_created_at ? 180 : 180
+  const [inactivityDays, setInactivityDays] = useState<number>(() =>
+    plan.grace_period_seconds
+      ? Math.max(1, Math.round(plan.grace_period_seconds / SECONDS_PER_DAY))
+      : 180
   );
-  const [yieldEnabled, setYieldEnabled] = useState<boolean>(
-    plan.risk_override_enabled ?? false
+  const [yieldEnabled, setYieldEnabled] = useState<boolean>(plan.earn_yield ?? false);
+  const [yieldRateBps, setYieldRateBps] = useState<number>(
+    plan.yield_rate_bps || DEFAULT_YIELD_RATE_BPS
   );
-  const [beneficiaries, setBeneficiaries] = useState<BeneficiaryLocal[]>(() => {
-    if (plan.beneficiary_name) {
-      return [
-        {
-          id: "existing-0",
-          wallet_address: "",
-          name: plan.beneficiary_name,
-          allocation_percentage: 100,
-          isFiat: false,
-        },
-      ];
-    }
-    return [{ ...DEFAULT_BENEFICIARY }];
-  });
+  const [beneficiaries, setBeneficiaries] = useState<BeneficiaryDraft[]>(() =>
+    seedBeneficiaries(plan)
+  );
 
   const [txStatus, setTxStatus] = useState<TxStatus>("idle");
   const [errorMessage, setErrorMessage] = useState<string>("");
+  const [touched, setTouched] = useState(false);
 
   const flowBeneficiaries: BeneficiaryFlow[] = beneficiaries.map((b) => ({
     name: b.name || "Unnamed",
-    allocation_percentage: b.allocation_percentage || 0,
+    allocation_percentage: b.allocationBps / 100 || 0,
     isFiat: b.isFiat,
   }));
 
   const payoutAmount = plan.net_amount ?? plan.fee ?? 0;
 
-  const allocationTotal = totalAllocation(beneficiaries);
-  const isAllocationValid = isAllocationDistributionValid(beneficiaries);
+  const allocationTotalBps = totalAllocationBps(beneficiaries);
+  const { rowErrors, totalError } = useMemo(
+    () => validateBeneficiaryDrafts(beneficiaries),
+    [beneficiaries]
+  );
+  const beneficiariesValid = Object.keys(rowErrors).length === 0 && !totalError;
+  // Gates the Save button: allocations must total exactly 10,000 bps.
+  // Per-field issues (name/address/fiat details) are caught in handleSave
+  // so their messages can be surfaced without blocking the click itself.
+  const allocationOnlyValid =
+    !totalError && beneficiaries.every((b) => (b.allocationBps || 0) > 0);
+  const showErrors = touched || txStatus === "error";
 
   const handleBeneficiaryChange = useCallback(
-    (index: number, field: keyof BeneficiaryLocal, value: string | number | boolean) => {
+    (index: number, field: keyof BeneficiaryDraft, value: string | number | boolean) => {
       setBeneficiaries((prev) =>
         prev.map((b, i) => (i === index ? { ...b, [field]: value } : b))
       );
@@ -199,7 +128,7 @@ export function EditInheritancePlanPanel({
   );
 
   const addBeneficiary = useCallback(() => {
-    setBeneficiaries((prev) => [...prev, { ...DEFAULT_BENEFICIARY }]);
+    setBeneficiaries((prev) => [...prev, { ...DEFAULT_BENEFICIARY_DRAFT }]);
   }, []);
 
   const removeBeneficiary = useCallback((index: number) => {
@@ -222,47 +151,63 @@ export function EditInheritancePlanPanel({
   };
 
   const handleSave = async () => {
-    if (!isAllocationValid) return;
+    setTouched(true);
 
-    const invalidBeneficiary = beneficiaries.find(
-      (b) => !b.name.trim() || (!b.id && !b.wallet_address.trim())
-    );
-    if (invalidBeneficiary) {
-      setErrorMessage("All beneficiaries must have a name and wallet address.");
+    if (!title.trim()) {
+      setErrorMessage("Title is required.");
+      return;
+    }
+
+    if (!beneficiariesValid) {
+      const firstRowError = Object.values(rowErrors)[0];
+      setErrorMessage(
+        firstRowError ||
+          totalError ||
+          "All beneficiaries must have a name and a valid Stellar wallet address."
+      );
       return;
     }
 
     setErrorMessage("");
     setTxStatus("signing");
 
-    let signedTransaction: string | undefined;
     try {
       const xdr = buildXdr();
-      signedTransaction = await signWithWallet(xdr);
+      await signWithWallet(xdr);
     } catch {
       // Wallet signing rejected or unavailable — proceed without signed XDR in dev.
-      signedTransaction = undefined;
     }
 
     setTxStatus("saving");
 
-    const apiBeneficiaries: Beneficiary[] = beneficiaries.map(
-      ({ isFiat: _, ...rest }) => rest
-    );
-
     const updateRequest: UpdatePlanRequest = {
-      title,
-      description: description || undefined,
-      beneficiaries: apiBeneficiaries,
-      inactivity_period_days: inactivityDays,
-      yield_harvesting_enabled: yieldEnabled,
-      signed_transaction: signedTransaction,
+      beneficiaries: beneficiaries.map(beneficiaryDraftToRequest),
+      grace_period: inactivityDays * SECONDS_PER_DAY,
+      earn_yield: yieldEnabled,
+      yield_rate_bps: yieldEnabled ? yieldRateBps : 0,
     };
 
     try {
       const updated = await plansAPI.updatePlan(plan.id, updateRequest);
+      const merged: Plan = {
+        ...plan,
+        title,
+        description: description || undefined,
+        status: updated.status,
+        is_active: updated.is_active,
+        amount: Number(updated.amount),
+        owner_address: updated.owner_address,
+        token_address: updated.token_address,
+        grace_period_seconds: updated.grace_period_seconds,
+        yield_rate_bps: updated.yield_rate_bps,
+        earn_yield: updated.earn_yield,
+        accrued_yield: updated.accrued_yield,
+        last_ping: updated.last_ping,
+        beneficiaries: updated.beneficiaries,
+        updated_at: new Date().toISOString(),
+      };
       setTxStatus("success");
-      setTimeout(() => onSaved(updated), 1200);
+      setTimeout(() => onSaved(merged), 1200);
     } catch (err) {
       setTxStatus("error");
       setErrorMessage(
@@ -360,22 +305,23 @@ export function EditInheritancePlanPanel({
               </h3>
               <span
                 className={`text-xs font-mono px-2 py-0.5 rounded-full ${
-                  isAllocationValid
+                  !totalError
                     ? "bg-[#48BB7814] text-[#48BB78]"
                     : "bg-[#F5656514] text-[#F56565]"
                 }`}
               >
-                {allocationTotal}% / 100%
+                {bpsToPercentageLabel(allocationTotalBps)}% / 100%
               </span>
             </div>
 
             <div className="space-y-3">
               <AnimatePresence initial={false}>
                 {beneficiaries.map((b, i) => (
-                  <BeneficiaryRow
+                  <BeneficiaryAllocationRow
                     key={i}
                     index={i}
                     beneficiary={b}
+                    error={showErrors ? rowErrors[i] : undefined}
                     onChange={handleBeneficiaryChange}
                     onRemove={removeBeneficiary}
                     canRemove={beneficiaries.length > 1}
@@ -392,6 +338,10 @@ export function EditInheritancePlanPanel({
               <Plus size={15} />
               Add beneficiary
             </button>
+
+            {showErrors && totalError && (
+              <p className="mt-2 text-xs text-[#F56565]">{totalError}</p>
+            )}
           </section>
 
           {/* Allocation Flow Chart */}
@@ -445,21 +395,39 @@ export function EditInheritancePlanPanel({
             <h3 className="text-xs font-semibold text-[#33C5E0] uppercase tracking-wider mb-3">
               Yield Harvesting
             </h3>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={yieldEnabled}
-              onClick={() => setYieldEnabled((v) => !v)}
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#33C5E0] ${
-                yieldEnabled ? "bg-[#33C5E0]" : "bg-[#2A3338]"
-              }`}
-            >
-              <span
-                className={`inline-block h-4 w-4 rounded-full bg-white shadow-md transform transition-transform ${
-                  yieldEnabled ? "translate-x-6" : "translate-x-1"
+            <div className="flex items-center gap-4">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={yieldEnabled}
+                onClick={() => setYieldEnabled((v) => !v)}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#33C5E0] ${
+                  yieldEnabled ? "bg-[#33C5E0]" : "bg-[#2A3338]"
                 }`}
-              />
-            </button>
+              >
+                <span
+                  className={`inline-block h-4 w-4 rounded-full bg-white shadow-md transform transition-transform ${
+                    yieldEnabled ? "translate-x-6" : "translate-x-1"
+                  }`}
+                />
+              </button>
+              {yieldEnabled && (
+                <div className="flex items-center gap-2">
+                  <label htmlFor="edit-yield-rate" className="text-xs text-[#92A5A8]">
+                    Rate (bps)
+                  </label>
+                  <input
+                    id="edit-yield-rate"
+                    type="number"
+                    min={0}
+                    max={10000}
+                    value={yieldRateBps}
+                    onChange={(e) => setYieldRateBps(Number(e.target.value))}
+                    className="w-24 bg-[#0A0F11] border border-[#2A3338] rounded-lg px-3 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-[#33C5E0] transition-colors"
+                  />
+                </div>
+              )}
+            </div>
             <p className="text-xs text-[#92A5A8] mt-2">
               {yieldEnabled
                 ? "Yield harvesting is enabled — idle assets earn interest via Stellar lending pools."
@@ -518,7 +486,7 @@ export function EditInheritancePlanPanel({
               type="button"
               onClick={handleSave}
               disabled={
-                !isAllocationValid ||
+                !allocationOnlyValid ||
                 !title.trim() ||
                 txStatus === "signing" ||
                 txStatus === "saving" ||
