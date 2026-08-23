@@ -2,7 +2,6 @@
 
 import { useState, useEffect } from "react";
 import { useRouter, useParams } from "next/navigation";
-import { plansAPI } from "@/app/lib/api/plans";
 import type { Plan } from "@/app/lib/api/plans";
 import { getPlan, useMockData } from "@/lib/api/dataSource";
 import { EditInheritancePlanPanel } from "@/components/plans/EditInheritancePlanPanel";
@@ -32,14 +31,11 @@ export default function EditPlanPage() {
   const handleClose = () => router.back();
 
   const handleSaved = (updated: Plan) => {
-    const save = useMockData
-      ? Promise.resolve(updated)
-      : plansAPI.updatePlan(planId, updated);
-    save.then((savedPlan) => {
-      if (useMockData) require("@/lib/mockStore").mockStore.updatePlan(planId, savedPlan);
-      setPlan(savedPlan);
-      router.back();
-    }).catch((err) => setError(err instanceof Error ? err.message : "Failed to save plan."));
+    // EditInheritancePlanPanel already persists the change via plansAPI.updatePlan
+    // and hands back the backend-confirmed plan — just sync local state here.
+    if (useMockData) require("@/lib/mockStore").mockStore.updatePlan(planId, updated);
+    setPlan(updated);
+    router.back();
   };
 
   if (loading) {
